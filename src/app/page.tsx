@@ -4,7 +4,7 @@ import { useState, useEffect, useRef, useCallback } from "react";
 import {
   Mic, Cpu, Wifi, HardDrive, Battery, MemoryStick, Monitor,
   Smartphone, Router, CircuitBoard, Activity, Volume2, Loader2,
-  Server, Globe, Zap, Signal, ChevronRight
+  Server, Globe, Zap, Signal, ChevronRight, Ear, EarOff
 } from "lucide-react";
 
 interface SystemData {
@@ -39,6 +39,13 @@ const DEVICE_ICONS: Record<string, any> = {
   unknown: Server,
 };
 
+// ─── Clap Detection Constants ───
+const CLAP_THRESHOLD = 0.45;        // Volume spike threshold (0–1)
+const CLAP_MIN_GAP = 150;           // Min ms between two claps
+const CLAP_MAX_GAP = 700;           // Max ms between two claps for double-clap
+const CLAP_COOLDOWN = 1500;         // Cooldown after wake to avoid re-triggering
+const CLAP_IMPULSE_DURATION = 80;   // A clap must be short (ms)
+
 export default function JarvisPage() {
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState("");
@@ -48,10 +55,22 @@ export default function JarvisPage() {
   const [systemData, setSystemData] = useState<SystemData | null>(null);
   const [networkData, setNetworkData] = useState<NetworkData | null>(null);
   const [activePanel, setActivePanel] = useState<"system" | "network" | "chat">("chat");
+  const [clapDetectionOn, setClapDetectionOn] = useState(false);
+  const [clapFlash, setClapFlash] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const recognitionRef = useRef<any>(null);
   const synthRef = useRef<SpeechSynthesis | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
+
+  // Clap detection refs
+  const audioContextRef = useRef<AudioContext | null>(null);
+  const analyserRef = useRef<AnalyserNode | null>(null);
+  const micStreamRef = useRef<MediaStream | null>(null);
+  const clapAnimFrameRef = useRef<number>(0);
+  const lastClapTimeRef = useRef<number>(0);
+  const clapCooldownRef = useRef<boolean>(false);
+  const wasLoudRef = useRef<boolean>(false);
+  const loudStartRef = useRef<number>(0);
 
   // Fetch system data
   const fetchSystem = useCallback(async () => {
@@ -77,8 +96,119 @@ export default function JarvisPage() {
     const sysInterval = setInterval(fetchSystem, 5000);
     const netInterval = setInterval(fetchNetwork, 15000);
     if (typeof window !== "undefined") synthRef.current = window.speechSynthesis;
-    return () => { clearInterval(sysInterval); clearInterval(netInterval); };
+    return () => {
+      clearInterval(sysInterval);
+      clearInterval(netInterval);
+      stopClapDetection();
+    };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [fetchSystem, fetchNetwork]);
+
+  // ─── Clap Detection Engine ───
+  const startClapDetection = useCallback(async () => {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const audioCtx = new AudioContext();
+      const source = audioCtx.createMediaStreamSource(stream);
+      const analyser = audioCtx.createAnalyser();
+      analyser.fftSize = 512;
+      analyser.smoothingTimeConstant = 0.3;
+      source.connect(analyser);
+
+      audioContextRef.current = audioCtx;
+      analyserRef.current = analyser;
+      micStreamRef.current = stream;
+      lastClapTimeRef.current = 0;
+      clapCooldownRef.current = false;
+      wasLoudRef.current = false;
+
+      const dataArray = new Uint8Array(analyser.fftSize);
+
+      const detectClap = () => {
+        if (!analyserRef.current) return;
+        analyserRef.current.getByteTimeDomainData(dataArray);
+
+        // Calculate RMS volume
+        let sum = 0;
+        for (let i = 0; i < dataArray.length; i++) {
+          const val = (dataArray[i] - 128) / 128;
+          sum += val * val;
+        }
+        const rms = Math.sqrt(sum / dataArray.length);
+        const now = Date.now();
+
+        // Detect impulse start
+        if (rms > CLAP_THRESHOLD && !wasLoudRef.current) {
+          wasLoudRef.current = true;
+          loudStartRef.current = now;
+        }
+
+        // Detect impulse end — check if it was short enough to be a clap
+        if (rms < CLAP_THRESHOLD * 0.5 && wasLoudRef.current) {
+          const loudDuration = now - loudStartRef.current;
+          wasLoudRef.current = false;
+
+          if (loudDuration < CLAP_IMPULSE_DURATION && !clapCooldownRef.current) {
+            const timeSinceLastClap = now - lastClapTimeRef.current;
+
+            if (timeSinceLastClap > CLAP_MIN_GAP && timeSinceLastClap < CLAP_MAX_GAP) {
+              // ✅ Double clap detected!
+              clapCooldownRef.current = true;
+              lastClapTimeRef.current = 0;
+
+              // Flash indicator
+              setClapFlash(true);
+              setTimeout(() => setClapFlash(false), 600);
+
+              // Wake JARVIS — trigger voice input
+              setTimeout(() => {
+                clapCooldownRef.current = false;
+              }, CLAP_COOLDOWN);
+
+              // Trigger the voice wake
+              document.dispatchEvent(new CustomEvent("jarvis-clap-wake"));
+            } else {
+              // First clap — record time
+              lastClapTimeRef.current = now;
+            }
+          }
+        }
+
+        clapAnimFrameRef.current = requestAnimationFrame(detectClap);
+      };
+
+      clapAnimFrameRef.current = requestAnimationFrame(detectClap);
+      setClapDetectionOn(true);
+    } catch (err) {
+      console.error("Clap detection: mic access denied", err);
+    }
+  }, []);
+
+  const stopClapDetection = useCallback(() => {
+    if (clapAnimFrameRef.current) {
+      cancelAnimationFrame(clapAnimFrameRef.current);
+      clapAnimFrameRef.current = 0;
+    }
+    if (audioContextRef.current) {
+      audioContextRef.current.close();
+      audioContextRef.current = null;
+    }
+    if (micStreamRef.current) {
+      micStreamRef.current.getTracks().forEach(t => t.stop());
+      micStreamRef.current = null;
+    }
+    analyserRef.current = null;
+    setClapDetectionOn(false);
+  }, []);
+
+  const toggleClapDetection = useCallback(() => {
+    if (clapDetectionOn) {
+      stopClapDetection();
+    } else {
+      startClapDetection();
+    }
+  }, [clapDetectionOn, startClapDetection, stopClapDetection]);
+
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -132,6 +262,41 @@ export default function JarvisPage() {
     }
   }, [systemData, networkData, messages, speak]);
 
+  // Listen for clap-wake events
+  useEffect(() => {
+    const handleClapWake = () => {
+      // Switch to chat panel and activate voice
+      setActivePanel("chat");
+      // Small delay so the UI switches first
+      setTimeout(() => {
+        if (!isListening && !isProcessing) {
+          if (isSpeaking) {
+            synthRef.current?.cancel();
+            setIsSpeaking(false);
+          }
+          const SR = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+          if (!SR) return;
+          const recognition = new SR();
+          recognition.continuous = false;
+          recognition.interimResults = false;
+          recognition.lang = "en-US";
+          recognition.onstart = () => setIsListening(true);
+          recognition.onresult = (e: any) => {
+            const text = e.results[0][0].transcript;
+            if (text) sendMessage(text);
+          };
+          recognition.onend = () => setIsListening(false);
+          recognition.onerror = () => setIsListening(false);
+          recognition.start();
+          recognitionRef.current = recognition;
+        }
+      }, 300);
+    };
+
+    document.addEventListener("jarvis-clap-wake", handleClapWake);
+    return () => document.removeEventListener("jarvis-clap-wake", handleClapWake);
+  }, [isListening, isProcessing, isSpeaking, sendMessage]);
+
   // Voice input
   const toggleVoice = () => {
     if (isListening) {
@@ -171,8 +336,11 @@ export default function JarvisPage() {
       {/* Scan overlay */}
       <div className="scan-overlay" />
 
+      {/* Draggable title bar for Electron */}
+      <div className="electron-drag-region" />
+
       {/* Header */}
-      <header className="px-4 sm:px-6 py-3 flex items-center justify-between border-b border-[rgba(0,212,255,0.06)] z-10 relative">
+      <header className="px-4 sm:px-6 py-3 flex items-center justify-between border-b border-[rgba(0,212,255,0.06)] z-10 relative" style={{ paddingLeft: '5rem' }}>
         <div className="flex items-center gap-3">
           <div className="w-8 h-8 rounded-full border border-cyan-500/30 flex items-center justify-center relative">
             <div className="w-3 h-3 rounded-full bg-cyan-400 shadow-[0_0_12px_rgba(0,212,255,0.6)]" />
@@ -180,7 +348,7 @@ export default function JarvisPage() {
           </div>
           <div>
             <h1 className="text-sm font-bold tracking-[0.3em] text-jarvis font-mono">J.A.R.V.I.S.</h1>
-            <p className="text-[9px] tracking-[0.2em] text-neutral-600 uppercase">Advanced AI System v3.0</p>
+            <p className="text-[9px] tracking-[0.2em] text-neutral-600 uppercase">Desktop AI System v3.0</p>
           </div>
         </div>
 
@@ -201,6 +369,22 @@ export default function JarvisPage() {
         </div>
 
         <div className="flex items-center gap-3 text-[10px] font-mono text-neutral-600">
+          {/* Clap Detection Toggle */}
+          <button
+            onClick={toggleClapDetection}
+            title={clapDetectionOn ? "Clap detection ON — double-clap to wake" : "Enable clap detection"}
+            className={`flex items-center gap-1.5 px-2 py-1 rounded-lg transition-all ${
+              clapDetectionOn
+                ? clapFlash
+                  ? "text-cyan-200 bg-cyan-400/30 border border-cyan-400/50 shadow-[0_0_15px_rgba(0,212,255,0.5)] scale-110"
+                  : "text-cyan-400 bg-cyan-500/10 border border-cyan-500/20"
+                : "text-neutral-600 hover:text-neutral-400 border border-transparent"
+            }`}
+          >
+            {clapDetectionOn ? <Ear className="w-3.5 h-3.5" /> : <EarOff className="w-3.5 h-3.5" />}
+            <span className="hidden sm:inline">{clapDetectionOn ? "👏 ON" : "👏"}</span>
+          </button>
+
           {systemData && (
             <>
               <span className={cpuColor}>CPU {systemData.cpu.usage}%</span>

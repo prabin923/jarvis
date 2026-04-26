@@ -94,15 +94,23 @@ function guessDeviceType(mac: string, hostname: string): "router" | "computer" |
 
 function getWifiInfo(): { ssid: string; signal: string } | null {
   try {
+    // Try networksetup first (most compatible)
     const ssid = execSync(
-      "/System/Library/PrivateFrameworks/Apple80211.framework/Versions/Current/Resources/airport -I | awk '/ SSID/ {print $2}'",
+      "networksetup -getairportnetwork en0 | sed 's/Current Wi-Fi Network: //'",
       { encoding: "utf-8", timeout: 3000 }
     ).trim();
-    const signal = execSync(
-      "/System/Library/PrivateFrameworks/Apple80211.framework/Versions/Current/Resources/airport -I | awk '/agrCtlRSSI/ {print $2}'",
-      { encoding: "utf-8", timeout: 3000 }
-    ).trim();
-    return { ssid: ssid || "Unknown", signal: signal ? `${signal} dBm` : "N/A" };
+    
+    // Try to get signal strength via system_profiler
+    let signal = "N/A";
+    try {
+      const profilerOutput = execSync(
+        "system_profiler SPAirPortDataType 2>/dev/null | grep -i 'signal' | head -1 | awk '{print $NF}'",
+        { encoding: "utf-8", timeout: 5000 }
+      ).trim();
+      if (profilerOutput) signal = `${profilerOutput} dBm`;
+    } catch {}
+
+    return { ssid: ssid || "Unknown", signal };
   } catch {
     return null;
   }

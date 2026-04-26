@@ -1,36 +1,62 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# J.A.R.V.I.S. — Desktop AI Assistant
 
-## Getting Started
+> Just A Rather Very Intelligent System — Your personal AI assistant with system access
 
-First, run the development server:
+A local desktop application powered by **Electron + Next.js** that monitors your system, scans your network, and provides an intelligent AI assistant — all running on your Mac.
+
+## Features
+
+- 🖥️ **Real-time System Monitoring** — CPU, RAM, disk, battery, and top processes
+- 🌐 **Network Scanner** — Detects all devices on your local network with vendor identification
+- 🤖 **AI Chat (Gemini)** — JARVIS personality with access to live system + network data
+- 🎙️ **Voice Input/Output** — Speak to JARVIS, hear responses via text-to-speech
+- ⌨️ **Global Shortcut** — Press `Cmd+Shift+J` to summon JARVIS from anywhere
+- 📌 **System Tray** — Stays in your menu bar, ready when you need it
+
+## Quick Start
 
 ```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+# Install dependencies
+npm install
+
+# Launch JARVIS as a desktop app
+npm run desktop
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+That's it! JARVIS will start its internal server and open as a native desktop window.
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+## Scripts
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+| Command | Description |
+|---------|-------------|
+| `npm run desktop` | Launch JARVIS desktop app |
+| `npm run dev` | Run as web app only (browser) |
+| `npm run dist` | Build distributable `.dmg` |
 
-## Learn More
+## Environment
 
-To learn more about Next.js, take a look at the following resources:
+Create `.env.local` with your Gemini API key:
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+```
+GOOGLE_GENERATIVE_AI_API_KEY=your_key_here
+```
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+## Tech Stack
 
-## Deploy on Vercel
+- **Electron** — Native desktop wrapper
+- **Next.js 16** — React framework with API routes
+- **Gemini AI** — Google's generative AI for JARVIS personality
+- **Tailwind CSS 4** — Styling
+- **Web Speech API** — Voice input/output
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+## Keyboard Shortcuts
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+| Shortcut | Action |
+|----------|--------|
+| `Cmd+Shift+J` | Summon JARVIS window |
+| `Cmd+W` | Hide to tray |
+| `Cmd+Q` | Quit JARVIS |
+
+---
+
+*Built by Prabin Sharma*
