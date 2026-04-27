@@ -103,6 +103,7 @@ export async function GET() {
 
     return NextResponse.json(data);
   } catch (error: any) {
-    return NextResponse.json({ error: error.message }, { status: 500 });
+    console.error("System API Error:", error);
+    return NextResponse.json({ error: "Failed to retrieve system metrics." }, { status: 500 });
   }
 }

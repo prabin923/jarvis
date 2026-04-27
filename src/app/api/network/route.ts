@@ -134,6 +134,7 @@ export async function GET() {
       timestamp: new Date().toISOString(),
     });
   } catch (error: any) {
-    return NextResponse.json({ error: error.message }, { status: 500 });
+    console.error("Network API Error:", error);
+    return NextResponse.json({ error: "Failed to perform network scan." }, { status: 500 });
   }
 }
