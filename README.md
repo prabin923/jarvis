@@ -10,8 +10,10 @@ A local desktop application powered by **Electron + Next.js** that monitors your
 - 🌐 **Network Scanner** — Detects all devices on your local network with vendor identification
 - 🤖 **AI Chat (Gemini)** — JARVIS personality with access to live system + network data
 - 🎙️ **Voice Input/Output** — Speak to JARVIS, hear responses via text-to-speech
+- 👏 **Clap-to-Wake** — Detection engine listens for a double-clap to automatically trigger voice input
 - ⌨️ **Global Shortcut** — Press `Cmd+Shift+J` to summon JARVIS from anywhere
 - 📌 **System Tray** — Stays in your menu bar, ready when you need it
+- 🛡️ **Security Hardened** — Masked internal error leakage in system, network, and chat APIs
 
 ## Quick Start
 
