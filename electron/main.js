@@ -1,10 +1,12 @@
-const { app, BrowserWindow, Tray, Menu, nativeImage, globalShortcut, shell } = require("electron");
+const { app, BrowserWindow, Tray, Menu, nativeImage, globalShortcut, shell, ipcMain } = require("electron");
 const path = require("path");
 const { spawn } = require("child_process");
 
 let mainWindow = null;
+let clapWindow = null;  // Hidden background window for clap detection
 let tray = null;
 let nextServer = null;
+let clapDetectionEnabled = true;
 const PORT = 3000;
 const DEV_URL = `http://localhost:${PORT}`;
 
@@ -17,6 +19,7 @@ if (!gotLock) {
 app.on("second-instance", () => {
   if (mainWindow) {
     if (mainWindow.isMinimized()) mainWindow.restore();
+    mainWindow.show();
     mainWindow.focus();
   }
 });
@@ -68,6 +71,65 @@ function createWindow() {
   });
 }
 
+// ─── Background Clap Detection Window ───
+function createClapListener() {
+  clapWindow = new BrowserWindow({
+    show: false,
+    width: 1,
+    height: 1,
+    skipTaskbar: true,
+    webPreferences: {
+      nodeIntegration: false,
+      contextIsolation: true,
+      preload: path.join(__dirname, "preload-clap.js"),
+    },
+  });
+
+  clapWindow.loadFile(path.join(__dirname, "clap-listener.html"));
+
+  // Grant mic permission automatically for the hidden window
+  clapWindow.webContents.session.setPermissionRequestHandler((webContents, permission, callback) => {
+    if (permission === "media") {
+      callback(true);  // Auto-grant mic access for clap detection
+    } else {
+      callback(false);
+    }
+  });
+
+  clapWindow.on("closed", () => {
+    clapWindow = null;
+  });
+
+  console.log("👏 Background clap detection started");
+}
+
+// Handle clap-wake IPC from the hidden listener
+ipcMain.on("clap-wake", () => {
+  if (!clapDetectionEnabled) return;
+
+  console.log("👏 Double-clap detected — waking JARVIS!");
+
+  if (mainWindow) {
+    // Window exists but may be hidden
+    if (!mainWindow.isVisible()) {
+      mainWindow.show();
+    }
+    if (mainWindow.isMinimized()) {
+      mainWindow.restore();
+    }
+    mainWindow.focus();
+
+    // Flash the window to grab attention
+    mainWindow.once("focus", () => {
+      mainWindow.flashFrame(false);
+    });
+    mainWindow.flashFrame(true);
+  } else {
+    // Window was fully closed — recreate it
+    createWindow();
+  }
+});
+
 function createTray() {
   // Create a simple tray icon (cyan circle)
   const icon = nativeImage.createFromBuffer(
@@ -85,27 +147,51 @@ function createTray() {
   tray.setTitle("JARVIS");
   tray.setToolTip("J.A.R.V.I.S. — Advanced AI System");
 
-  const contextMenu = Menu.buildFromTemplate([
-    {
-      label: "Open JARVIS",
-      click: () => {
-        if (mainWindow) {
-          mainWindow.show();
-          mainWindow.focus();
-        }
+  const buildTrayMenu = () => {
+    const contextMenu = Menu.buildFromTemplate([
+      {
+        label: "Open JARVIS",
+        click: () => {
+          if (mainWindow) {
+            mainWindow.show();
+            mainWindow.focus();
+          } else {
+            createWindow();
+          }
+        },
       },
-    },
-    { type: "separator" },
-    {
-      label: "Quit JARVIS",
-      click: () => {
-        app.isQuitting = true;
-        app.quit();
-      },
-    },
-  ]);
+      { type: "separator" },
+      {
+        label: clapDetectionEnabled ? "👏 Clap Detection: ON" : "👏 Clap Detection: OFF",
+        click: () => {
+          clapDetectionEnabled = !clapDetectionEnabled;
+          console.log(`👏 Clap detection ${clapDetectionEnabled ? "enabled" : "disabled"}`);
 
-  tray.setContextMenu(contextMenu);
+          if (clapDetectionEnabled && !clapWindow) {
+            createClapListener();
+          } else if (!clapDetectionEnabled && clapWindow) {
+            clapWindow.close();
+            clapWindow = null;
+          }
+
+          // Rebuild menu to update label
+          buildTrayMenu();
+        },
+      },
+      { type: "separator" },
+      {
+        label: "Quit JARVIS",
+        click: () => {
+          app.isQuitting = true;
+          app.quit();
+        },
+      },
+    ]);
+    tray.setContextMenu(contextMenu);
+  };
+
+  buildTrayMenu();
+
   tray.on("click", () => {
     if (mainWindow) {
       if (mainWindow.isVisible()) {
@@ -113,6 +199,8 @@ function createTray() {
       } else {
         mainWindow.show();
       }
+    } else {
+      createWindow();
     }
   });
 }
@@ -187,6 +275,8 @@ app.whenReady().then(async () => {
         mainWindow.show();
         mainWindow.focus();
       }
+    } else {
+      createWindow();
     }
   });
 
@@ -202,6 +292,11 @@ app.whenReady().then(async () => {
 
   createWindow();
   createTray();
+
+  // Start background clap detection
+  if (clapDetectionEnabled) {
+    createClapListener();
+  }
 });
 
 app.on("activate", () => {
@@ -216,6 +311,12 @@ app.on("before-quit", () => {
   app.isQuitting = true;
   globalShortcut.unregisterAll();
 
+  // Close clap listener
+  if (clapWindow) {
+    clapWindow.close();
+    clapWindow = null;
+  }
+
   // Kill the Next.js server
   if (nextServer) {
     console.log("🛑 Shutting down Next.js server...");
@@ -225,8 +326,9 @@ app.on("before-quit", () => {
 });
 
 app.on("window-all-closed", () => {
-  // On macOS, keep running in tray
+  // On macOS, keep running in tray (clap detection stays active)
   if (process.platform !== "darwin") {
     app.quit();
   }
 });
+

@@ -1,0 +1,110 @@
+<!DOCTYPE html>
+<html>
+<head><title>JARVIS Clap Listener</title></head>
+<body>
+<script>
+/**
+ * Background Clap Detection Engine
+ * Runs in a hidden Electron renderer process 24/7.
+ * Detects double-clap patterns and notifies the main process via IPC.
+ */
+
+const CLAP_THRESHOLD = 0.25;
+const CLAP_MIN_GAP = 100;
+const CLAP_MAX_GAP = 900;
+const CLAP_COOLDOWN = 1500;
+const CLAP_IMPULSE_DURATION = 200;
+const CLAP_FREQUENCY_SPREAD = 0.4;
+
+let running = false;
+
+async function startListening() {
+  if (running) return;
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    const audioCtx = new AudioContext();
+    const source = audioCtx.createMediaStreamSource(stream);
+    const analyser = audioCtx.createAnalyser();
+    analyser.fftSize = 1024;
+    analyser.smoothingTimeConstant = 0.1;
+    source.connect(analyser);
+
+    const timeDomainData = new Uint8Array(analyser.fftSize);
+    const freqData = new Uint8Array(analyser.frequencyBinCount);
+
+    let lastClapTime = 0;
+    let cooldown = false;
+    let wasLoud = false;
+    let loudStart = 0;
+
+    running = true;
+
+    const isSpectrallyFlat = () => {
+      analyser.getByteFrequencyData(freqData);
+      let sum = 0, max = 0;
+      for (let i = 0; i < freqData.length; i++) {
+        sum += freqData[i];
+        if (freqData[i] > max) max = freqData[i];
+      }
+      if (max === 0) return false;
+      return (sum / freqData.length / max) > CLAP_FREQUENCY_SPREAD;
+    };
+
+    const detect = () => {
+      if (!running) return;
+      analyser.getByteTimeDomainData(timeDomainData);
+
+      let sum = 0;
+      for (let i = 0; i < timeDomainData.length; i++) {
+        const val = (timeDomainData[i] - 128) / 128;
+        sum += val * val;
+      }
+      const rms = Math.sqrt(sum / timeDomainData.length);
+      const now = Date.now();
+
+      if (rms > CLAP_THRESHOLD && !wasLoud) {
+        wasLoud = true;
+        loudStart = now;
+      }
+
+      if (rms < CLAP_THRESHOLD * 0.4 && wasLoud) {
+        const loudDuration = now - loudStart;
+        wasLoud = false;
+
+        if (loudDuration < CLAP_IMPULSE_DURATION && !cooldown && isSpectrallyFlat()) {
+          const timeSinceLastClap = now - lastClapTime;
+
+          if (timeSinceLastClap > CLAP_MIN_GAP && timeSinceLastClap < CLAP_MAX_GAP) {
+            // Double clap detected — wake JARVIS!
+            cooldown = true;
+            lastClapTime = 0;
+            console.log("[Clap Listener] Double clap detected — waking JARVIS");
+
+            if (window.jarvisClap) {
+              window.jarvisClap.onDoubleClap();
+            }
+
+            setTimeout(() => { cooldown = false; }, CLAP_COOLDOWN);
+          } else {
+            lastClapTime = now;
+          }
+        }
+      }
+
+      requestAnimationFrame(detect);
+    };
+
+    requestAnimationFrame(detect);
+    console.log("[Clap Listener] Background clap detection active");
+  } catch (err) {
+    console.error("[Clap Listener] Mic access denied:", err);
+    // Retry after 5 seconds
+    setTimeout(startListening, 5000);
+  }
+}
+
+// Start immediately
+startListening();
+</script>
+</body>
+</html>
