@@ -40,11 +40,12 @@ const DEVICE_ICONS: Record<string, any> = {
 };
 
 // ─── Clap Detection Constants ───
-const CLAP_THRESHOLD = 0.45;        // Volume spike threshold (0–1)
-const CLAP_MIN_GAP = 150;           // Min ms between two claps
-const CLAP_MAX_GAP = 700;           // Max ms between two claps for double-clap
+const CLAP_THRESHOLD = 0.25;        // Volume spike threshold (0–1) — lowered for real claps
+const CLAP_MIN_GAP = 100;           // Min ms between two claps
+const CLAP_MAX_GAP = 900;           // Max ms between two claps for double-clap
 const CLAP_COOLDOWN = 1500;         // Cooldown after wake to avoid re-triggering
-const CLAP_IMPULSE_DURATION = 80;   // A clap must be short (ms)
+const CLAP_IMPULSE_DURATION = 200;  // A clap must be short (ms) — widened for real hardware
+const CLAP_FREQUENCY_SPREAD = 0.4;  // Min spectral flatness (claps = broadband noise)
 
 export default function JarvisPage() {
   const [messages, setMessages] = useState<Message[]>([]);
@@ -104,15 +105,15 @@ export default function JarvisPage() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [fetchSystem, fetchNetwork]);
 
-  // ─── Clap Detection Engine ───
+  // ─── Clap Detection Engine (improved) ───
   const startClapDetection = useCallback(async () => {
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       const audioCtx = new AudioContext();
       const source = audioCtx.createMediaStreamSource(stream);
       const analyser = audioCtx.createAnalyser();
-      analyser.fftSize = 512;
-      analyser.smoothingTimeConstant = 0.3;
+      analyser.fftSize = 1024;
+      analyser.smoothingTimeConstant = 0.1; // Low smoothing to preserve sharp transients
       source.connect(analyser);
 
       audioContextRef.current = audioCtx;
@@ -122,19 +123,35 @@ export default function JarvisPage() {
       clapCooldownRef.current = false;
       wasLoudRef.current = false;
 
-      const dataArray = new Uint8Array(analyser.fftSize);
+      const timeDomainData = new Uint8Array(analyser.fftSize);
+      const freqData = new Uint8Array(analyser.frequencyBinCount);
+
+      // Check if sound is broadband (clap-like) vs tonal (voice/music)
+      const isSpectrallyFlat = (): boolean => {
+        analyser.getByteFrequencyData(freqData);
+        let sum = 0;
+        let max = 0;
+        for (let i = 0; i < freqData.length; i++) {
+          sum += freqData[i];
+          if (freqData[i] > max) max = freqData[i];
+        }
+        if (max === 0) return false;
+        const mean = sum / freqData.length;
+        // Spectral flatness: ratio of mean to max (1 = perfectly flat = noise/clap)
+        return (mean / max) > CLAP_FREQUENCY_SPREAD;
+      };
 
       const detectClap = () => {
         if (!analyserRef.current) return;
-        analyserRef.current.getByteTimeDomainData(dataArray);
+        analyserRef.current.getByteTimeDomainData(timeDomainData);
 
         // Calculate RMS volume
         let sum = 0;
-        for (let i = 0; i < dataArray.length; i++) {
-          const val = (dataArray[i] - 128) / 128;
+        for (let i = 0; i < timeDomainData.length; i++) {
+          const val = (timeDomainData[i] - 128) / 128;
           sum += val * val;
         }
-        const rms = Math.sqrt(sum / dataArray.length);
+        const rms = Math.sqrt(sum / timeDomainData.length);
         const now = Date.now();
 
         // Detect impulse start
@@ -144,11 +161,12 @@ export default function JarvisPage() {
         }
 
         // Detect impulse end — check if it was short enough to be a clap
-        if (rms < CLAP_THRESHOLD * 0.5 && wasLoudRef.current) {
+        if (rms < CLAP_THRESHOLD * 0.4 && wasLoudRef.current) {
           const loudDuration = now - loudStartRef.current;
           wasLoudRef.current = false;
 
-          if (loudDuration < CLAP_IMPULSE_DURATION && !clapCooldownRef.current) {
+          // Must be short (impulse) AND broadband (not voice)
+          if (loudDuration < CLAP_IMPULSE_DURATION && !clapCooldownRef.current && isSpectrallyFlat()) {
             const timeSinceLastClap = now - lastClapTimeRef.current;
 
             if (timeSinceLastClap > CLAP_MIN_GAP && timeSinceLastClap < CLAP_MAX_GAP) {
