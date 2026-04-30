@@ -1,7 +1,48 @@
 import { NextResponse } from "next/server";
 import { GoogleGenerativeAI } from "@google/generative-ai";
 
-const genAI = new GoogleGenerativeAI(process.env.GOOGLE_GENERATIVE_AI_API_KEY || "");
+export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
+
+interface SystemData {
+  hostname: string;
+  platform: string;
+  arch: string;
+  uptime: string;
+  cpu?: { model: string; cores: number; usage: number };
+  memory?: { total: string; used: string; percent: number };
+  disk?: { total: string; used: string; percent: number };
+  battery?: { percent: number; charging: boolean; timeRemaining: string } | null;
+  processes?: Array<{ name: string; cpu: string }>;
+}
+
+interface NetworkData {
+  localDevice?: { ip: string };
+  wifi?: { ssid: string; signal: string } | null;
+  devices?: Array<{ ip: string; mac: string; vendor: string; type: string; hostname?: string }>;
+  totalDevices?: number;
+}
+
+interface ChatMessage {
+  role: "user" | "assistant";
+  content: string;
+}
+
+interface ChatRequest {
+  message?: string;
+  systemData?: SystemData | null;
+  networkData?: NetworkData | null;
+  history?: ChatMessage[];
+}
+
+let genAI: GoogleGenerativeAI | null = null;
+
+function getGenAI() {
+  if (!genAI) {
+    genAI = new GoogleGenerativeAI(process.env.GOOGLE_GENERATIVE_AI_API_KEY || "");
+  }
+  return genAI;
+}
 
 const JARVIS_SYSTEM = `You are JARVIS — Just A Rather Very Intelligent System — an advanced AI assistant inspired by Tony Stark's AI.
 
@@ -39,7 +80,7 @@ RULES:
 
 export async function POST(req: Request) {
   try {
-    const { message, systemData, networkData, history } = await req.json();
+    const { message, systemData, networkData, history } = (await req.json()) as ChatRequest;
 
     if (!message) {
       return NextResponse.json({ error: "Message required" }, { status: 400 });
@@ -54,23 +95,23 @@ CPU: ${systemData.cpu?.model} (${systemData.cpu?.cores} cores, ${systemData.cpu?
 Memory: ${systemData.memory?.used} / ${systemData.memory?.total} (${systemData.memory?.percent}%)
 Disk: ${systemData.disk?.used} / ${systemData.disk?.total} (${systemData.disk?.percent}%)
 ${systemData.battery ? `Battery: ${systemData.battery.percent}% (${systemData.battery.charging ? "Charging" : systemData.battery.timeRemaining + " remaining"})` : "Battery: N/A (desktop)"}
-Top Processes: ${systemData.processes?.slice(0, 5).map((p: any) => `${p.name}(${p.cpu})`).join(", ") || "N/A"}`;
+Top Processes: ${systemData.processes?.slice(0, 5).map((p) => `${p.name}(${p.cpu})`).join(", ") || "N/A"}`;
     }
 
     if (networkData) {
       context += `\n[NETWORK SCAN]
 Local IP: ${networkData.localDevice?.ip} | WiFi: ${networkData.wifi?.ssid || "N/A"} (${networkData.wifi?.signal || "N/A"})
 Connected Devices (${networkData.totalDevices}):
-${networkData.devices?.map((d: any) => `  - ${d.ip} | ${d.mac} | ${d.vendor} | ${d.type}${d.hostname ? ` | ${d.hostname}` : ""}`).join("\n") || "None detected"}`;
+${networkData.devices?.map((d) => `  - ${d.ip} | ${d.mac} | ${d.vendor} | ${d.type}${d.hostname ? ` | ${d.hostname}` : ""}`).join("\n") || "None detected"}`;
     }
 
-    const model = genAI.getGenerativeModel({
+    const model = getGenAI().getGenerativeModel({
       model: "gemini-2.5-flash-lite",
       systemInstruction: JARVIS_SYSTEM,
       generationConfig: { maxOutputTokens: 500, temperature: 0.7 },
     });
 
-    const chatHistory = (history || []).slice(-10).map((m: any) => ({
+    const chatHistory = (history || []).slice(-10).map((m) => ({
       role: m.role === "user" ? "user" : "model",
       parts: [{ text: m.content }],
     }));
@@ -82,7 +123,7 @@ ${networkData.devices?.map((d: any) => `  - ${d.ip} | ${d.mac} | ${d.vendor} | $
     const reply = result.response.text().trim();
 
     return NextResponse.json({ reply });
-  } catch (error: any) {
+  } catch (error: unknown) {
     console.error("JARVIS Error:", error);
     return NextResponse.json({ error: "An error occurred while processing your request." }, { status: 500 });
   }

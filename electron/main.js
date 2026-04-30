@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/no-require-imports */
 const { app, BrowserWindow, Tray, Menu, nativeImage, globalShortcut, shell, ipcMain } = require("electron");
 const path = require("path");
 const { spawn } = require("child_process");
@@ -71,6 +72,41 @@ function createWindow() {
   });
 }
 
+function activateMainWindow() {
+  if (!mainWindow) {
+    createWindow();
+    return;
+  }
+
+  if (!mainWindow.isVisible()) {
+    mainWindow.show();
+  }
+  if (mainWindow.isMinimized()) {
+    mainWindow.restore();
+  }
+  mainWindow.focus();
+}
+
+function wakeJarvisVoice() {
+  activateMainWindow();
+
+  if (!mainWindow) return;
+
+  if (mainWindow.webContents.isLoading()) {
+    mainWindow.webContents.once("did-finish-load", () => {
+      mainWindow?.webContents.executeJavaScript(
+        "document.dispatchEvent(new CustomEvent('jarvis-clap-wake'))",
+        true
+      );
+    });
+  } else {
+    mainWindow.webContents.executeJavaScript(
+      "document.dispatchEvent(new CustomEvent('jarvis-clap-wake'))",
+      true
+    );
+  }
+}
+
 // ─── Background Clap Detection Window ───
 function createClapListener() {
   clapWindow = new BrowserWindow({
@@ -88,7 +124,7 @@ function createClapListener() {
   clapWindow.loadFile(path.join(__dirname, "clap-listener.html"));
 
   // Grant mic permission automatically for the hidden window
-  clapWindow.webContents.session.setPermissionRequestHandler((webContents, permission, callback) => {
+  clapWindow.webContents.session.setPermissionRequestHandler((_webContents, permission, callback) => {
     if (permission === "media") {
       callback(true);  // Auto-grant mic access for clap detection
     } else {
@@ -110,14 +146,7 @@ ipcMain.on("clap-wake", () => {
   console.log("👏 Double-clap detected — waking JARVIS!");
 
   if (mainWindow) {
-    // Window exists but may be hidden
-    if (!mainWindow.isVisible()) {
-      mainWindow.show();
-    }
-    if (mainWindow.isMinimized()) {
-      mainWindow.restore();
-    }
-    mainWindow.focus();
+    wakeJarvisVoice();
 
     // Flash the window to grab attention
     mainWindow.once("focus", () => {
@@ -126,13 +155,13 @@ ipcMain.on("clap-wake", () => {
     mainWindow.flashFrame(true);
   } else {
     // Window was fully closed — recreate it
-    createWindow();
+    wakeJarvisVoice();
   }
 });
 
 function createTray() {
   // Create a simple tray icon (cyan circle)
-  const icon = nativeImage.createFromBuffer(
+  const trayIcon = nativeImage.createFromBuffer(
     Buffer.from(
       `<svg xmlns="http://www.w3.org/2000/svg" width="22" height="22" viewBox="0 0 22 22">
         <circle cx="11" cy="11" r="9" fill="#0a0a0f" stroke="#00d4ff" stroke-width="2"/>
@@ -141,8 +170,6 @@ function createTray() {
     )
   );
 
-  // Fallback: use a template image for macOS
-  const trayIcon = nativeImage.createEmpty();
   tray = new Tray(trayIcon);
   tray.setTitle("JARVIS");
   tray.setToolTip("J.A.R.V.I.S. — Advanced AI System");
@@ -287,7 +314,7 @@ app.whenReady().then(async () => {
     await startNextServer();
     console.log("✅ Next.js server ready");
   } catch (err) {
-    console.error("⚠️  Could not confirm server start, trying anyway...");
+    console.error("⚠️  Could not confirm server start, trying anyway...", err);
   }
 
   createWindow();
@@ -331,4 +358,3 @@ app.on("window-all-closed", () => {
     app.quit();
   }
 });
-

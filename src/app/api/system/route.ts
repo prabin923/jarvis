@@ -2,12 +2,15 @@ import { NextResponse } from "next/server";
 import os from "os";
 import { execSync } from "child_process";
 
+export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
+
 function getCPUUsage(): number {
   const cpus = os.cpus();
   let totalIdle = 0, totalTick = 0;
   for (const cpu of cpus) {
-    for (const type in cpu.times) {
-      totalTick += (cpu.times as any)[type];
+    for (const type of Object.keys(cpu.times) as Array<keyof typeof cpu.times>) {
+      totalTick += cpu.times[type];
     }
     totalIdle += cpu.times.idle;
   }
@@ -102,7 +105,7 @@ export async function GET() {
     };
 
     return NextResponse.json(data);
-  } catch (error: any) {
+  } catch (error: unknown) {
     console.error("System API Error:", error);
     return NextResponse.json({ error: "Failed to retrieve system metrics." }, { status: 500 });
   }

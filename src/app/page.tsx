@@ -1,5 +1,6 @@
 "use client";
 
+import type { ComponentType } from "react";
 import { useState, useEffect, useRef, useCallback } from "react";
 import {
   Mic, Cpu, Wifi, HardDrive, Battery, MemoryStick, Monitor,
@@ -19,19 +20,46 @@ interface SystemData {
   processes: { name: string; cpu: string; mem: string }[];
 }
 
-interface NetworkData {
-  localDevice: { ip: string; hostname: string };
-  wifi: { ssid: string; signal: string } | null;
-  devices: { ip: string; mac: string; hostname: string; vendor: string; type: string }[];
-  totalDevices: number;
-}
-
 interface Message {
   role: "user" | "assistant";
   content: string;
 }
 
-const DEVICE_ICONS: Record<string, any> = {
+type DeviceType = "router" | "computer" | "phone" | "iot" | "unknown";
+type ActivePanel = "system" | "network" | "chat";
+type SpeechRecognitionConstructor = new () => SpeechRecognition;
+
+interface NetworkData {
+  localDevice: { ip: string; hostname: string };
+  wifi: { ssid: string; signal: string } | null;
+  devices: { ip: string; mac: string; hostname: string; vendor: string; type: DeviceType }[];
+  totalDevices: number;
+}
+
+interface SpeechRecognitionResultEvent extends Event {
+  results: SpeechRecognitionResultList;
+}
+
+interface SpeechRecognition extends EventTarget {
+  continuous: boolean;
+  interimResults: boolean;
+  lang: string;
+  onstart: (() => void) | null;
+  onresult: ((event: SpeechRecognitionResultEvent) => void) | null;
+  onend: (() => void) | null;
+  onerror: (() => void) | null;
+  start: () => void;
+  stop: () => void;
+}
+
+interface SpeechWindow extends Window {
+  SpeechRecognition?: SpeechRecognitionConstructor;
+  webkitSpeechRecognition?: SpeechRecognitionConstructor;
+}
+
+const ACTIVE_PANELS = ["chat", "system", "network"] as const;
+
+const DEVICE_ICONS: Record<DeviceType, ComponentType<{ className?: string }>> = {
   router: Router,
   computer: Monitor,
   phone: Smartphone,
@@ -55,11 +83,11 @@ export default function JarvisPage() {
   const [isSpeaking, setIsSpeaking] = useState(false);
   const [systemData, setSystemData] = useState<SystemData | null>(null);
   const [networkData, setNetworkData] = useState<NetworkData | null>(null);
-  const [activePanel, setActivePanel] = useState<"system" | "network" | "chat">("chat");
+  const [activePanel, setActivePanel] = useState<ActivePanel>("chat");
   const [clapDetectionOn, setClapDetectionOn] = useState(false);
   const [clapFlash, setClapFlash] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
-  const recognitionRef = useRef<any>(null);
+  const recognitionRef = useRef<SpeechRecognition | null>(null);
   const synthRef = useRef<SpeechSynthesis | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
@@ -72,6 +100,23 @@ export default function JarvisPage() {
   const clapCooldownRef = useRef<boolean>(false);
   const wasLoudRef = useRef<boolean>(false);
   const loudStartRef = useRef<number>(0);
+
+  const stopClapDetection = useCallback(() => {
+    if (clapAnimFrameRef.current) {
+      cancelAnimationFrame(clapAnimFrameRef.current);
+      clapAnimFrameRef.current = 0;
+    }
+    if (audioContextRef.current) {
+      void audioContextRef.current.close();
+      audioContextRef.current = null;
+    }
+    if (micStreamRef.current) {
+      micStreamRef.current.getTracks().forEach((track) => track.stop());
+      micStreamRef.current = null;
+    }
+    analyserRef.current = null;
+    setClapDetectionOn(false);
+  }, []);
 
   // Fetch system data
   const fetchSystem = useCallback(async () => {
@@ -92,18 +137,20 @@ export default function JarvisPage() {
   }, []);
 
   useEffect(() => {
-    fetchSystem();
-    fetchNetwork();
+    const initialFetch = window.setTimeout(() => {
+      void fetchSystem();
+      void fetchNetwork();
+    }, 0);
     const sysInterval = setInterval(fetchSystem, 5000);
     const netInterval = setInterval(fetchNetwork, 15000);
     if (typeof window !== "undefined") synthRef.current = window.speechSynthesis;
     return () => {
+      clearTimeout(initialFetch);
       clearInterval(sysInterval);
       clearInterval(netInterval);
       stopClapDetection();
     };
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [fetchSystem, fetchNetwork]);
+  }, [fetchSystem, fetchNetwork, stopClapDetection]);
 
   // ─── Clap Detection Engine (improved) ───
   const startClapDetection = useCallback(async () => {
@@ -202,23 +249,6 @@ export default function JarvisPage() {
     }
   }, []);
 
-  const stopClapDetection = useCallback(() => {
-    if (clapAnimFrameRef.current) {
-      cancelAnimationFrame(clapAnimFrameRef.current);
-      clapAnimFrameRef.current = 0;
-    }
-    if (audioContextRef.current) {
-      audioContextRef.current.close();
-      audioContextRef.current = null;
-    }
-    if (micStreamRef.current) {
-      micStreamRef.current.getTracks().forEach(t => t.stop());
-      micStreamRef.current = null;
-    }
-    analyserRef.current = null;
-    setClapDetectionOn(false);
-  }, []);
-
   const toggleClapDetection = useCallback(() => {
     if (clapDetectionOn) {
       stopClapDetection();
@@ -280,40 +310,42 @@ export default function JarvisPage() {
     }
   }, [systemData, networkData, messages, speak]);
 
-  // Listen for clap-wake events
+  const startVoiceInput = useCallback(() => {
+    if (isListening || isProcessing) return;
+    if (isSpeaking) {
+      synthRef.current?.cancel();
+      setIsSpeaking(false);
+    }
+
+    const speechWindow = window as SpeechWindow;
+    const SR = speechWindow.SpeechRecognition || speechWindow.webkitSpeechRecognition;
+    if (!SR) return;
+
+    const recognition = new SR();
+    recognition.continuous = false;
+    recognition.interimResults = false;
+    recognition.lang = "en-US";
+    recognition.onstart = () => setIsListening(true);
+    recognition.onresult = (e) => {
+      const text = e.results[0][0].transcript;
+      if (text) sendMessage(text);
+    };
+    recognition.onend = () => setIsListening(false);
+    recognition.onerror = () => setIsListening(false);
+    recognition.start();
+    recognitionRef.current = recognition;
+  }, [isListening, isProcessing, isSpeaking, sendMessage]);
+
+  // Listen for wake events from the in-page clap detector and Electron background listener.
   useEffect(() => {
     const handleClapWake = () => {
-      // Switch to chat panel and activate voice
       setActivePanel("chat");
-      // Small delay so the UI switches first
-      setTimeout(() => {
-        if (!isListening && !isProcessing) {
-          if (isSpeaking) {
-            synthRef.current?.cancel();
-            setIsSpeaking(false);
-          }
-          const SR = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
-          if (!SR) return;
-          const recognition = new SR();
-          recognition.continuous = false;
-          recognition.interimResults = false;
-          recognition.lang = "en-US";
-          recognition.onstart = () => setIsListening(true);
-          recognition.onresult = (e: any) => {
-            const text = e.results[0][0].transcript;
-            if (text) sendMessage(text);
-          };
-          recognition.onend = () => setIsListening(false);
-          recognition.onerror = () => setIsListening(false);
-          recognition.start();
-          recognitionRef.current = recognition;
-        }
-      }, 300);
+      window.setTimeout(startVoiceInput, 300);
     };
 
     document.addEventListener("jarvis-clap-wake", handleClapWake);
     return () => document.removeEventListener("jarvis-clap-wake", handleClapWake);
-  }, [isListening, isProcessing, isSpeaking, sendMessage]);
+  }, [startVoiceInput]);
 
   // Voice input
   const toggleVoice = () => {
@@ -322,27 +354,8 @@ export default function JarvisPage() {
       setIsListening(false);
       return;
     }
-    if (isSpeaking) {
-      synthRef.current?.cancel();
-      setIsSpeaking(false);
-    }
 
-    const SR = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
-    if (!SR) return;
-
-    const recognition = new SR();
-    recognition.continuous = false;
-    recognition.interimResults = false;
-    recognition.lang = "en-US";
-    recognition.onstart = () => setIsListening(true);
-    recognition.onresult = (e: any) => {
-      const text = e.results[0][0].transcript;
-      if (text) sendMessage(text);
-    };
-    recognition.onend = () => setIsListening(false);
-    recognition.onerror = () => setIsListening(false);
-    recognition.start();
-    recognitionRef.current = recognition;
+    startVoiceInput();
   };
 
   const cpuColor = (systemData?.cpu.usage || 0) > 80 ? "text-red-400" : (systemData?.cpu.usage || 0) > 50 ? "text-amber-400" : "text-cyan-400";
@@ -371,10 +384,10 @@ export default function JarvisPage() {
         </div>
 
         <div className="flex items-center gap-2">
-          {["chat", "system", "network"].map((p) => (
+          {ACTIVE_PANELS.map((p) => (
             <button
               key={p}
-              onClick={() => setActivePanel(p as any)}
+              onClick={() => setActivePanel(p)}
               className={`px-3 py-1.5 rounded-lg text-[10px] font-bold uppercase tracking-wider transition-all font-mono ${
                 activePanel === p
                   ? "text-cyan-300 bg-cyan-500/10 border border-cyan-500/20"

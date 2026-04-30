@@ -2,6 +2,9 @@ import { NextResponse } from "next/server";
 import { execSync } from "child_process";
 import os from "os";
 
+export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
+
 interface NetworkDevice {
   ip: string;
   mac: string;
@@ -133,7 +136,7 @@ export async function GET() {
       totalDevices: devices.length,
       timestamp: new Date().toISOString(),
     });
-  } catch (error: any) {
+  } catch (error: unknown) {
     console.error("Network API Error:", error);
     return NextResponse.json({ error: "Failed to perform network scan." }, { status: 500 });
   }
